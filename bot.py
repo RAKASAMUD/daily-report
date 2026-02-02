@@ -191,6 +191,10 @@ def home(): return "Bot Active"
 
 def run_flask(): app.run(host='0.0.0.0', port=8080)
 
+async def cancel_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Input dibatalkan le.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
 if __name__ == '__main__':
     Thread(target=run_flask).start()
     
@@ -209,7 +213,7 @@ if __name__ == '__main__':
             NAMA_BARANG: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_nama_barang)],
             PENGELUARAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_pengeluaran)],
         },
-        fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)],
+        fallbacks=[CommandHandler('cancel',cancel_action)],
         allow_reentry=True
     )
 

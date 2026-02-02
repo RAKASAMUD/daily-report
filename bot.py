@@ -33,7 +33,7 @@ NAMA, GMAIL, BUDGET, TANGGAL_H, NAMA_BARANG, PENGELUARAN = range(6)
 
 # --- FUNGSI HELPER DATABASE ---
 def get_user_profile(user_id):
-    res = supabase.table("profiles").select("*").eq("user_id", user_id).execute()
+    res = supabase.table("Daily_Raport").select("*").eq("user_id", user_id).execute()
     return res.data[0] if res.data else None
 
 def get_today_expenses(user_id):
@@ -71,7 +71,7 @@ async def ambil_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     budget = int(update.message.text)
     
     # Update Budget di database
-    supabase.table("profiles").update({"budget": budget}).eq("user_id", user_id).execute()
+    supabase.table("Daily_Raport").update({"budget": budget}).eq("user_id", user_id).execute()
     
     await update.message.reply_text(f"Budget Rp{budget:,} sudah tersimpan! jika ada pengeluaran ketik /pengeluaran.")
     return ConversationHandler.END

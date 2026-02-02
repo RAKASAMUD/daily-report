@@ -57,7 +57,7 @@ async def ambil_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gmail = update.message.text
     
     # Simpan/Update ke Supabase
-    supabase.table("Daily_Raports").upsert({"user_id": user_id, "nama": nama, "gmail": gmail}).execute()
+    supabase.table("Daily_Raport").upsert({"user_id": user_id, "nama": nama, "gmail": gmail}).execute()
     await update.message.reply_text("Profil telah tersimpan. Ketik /newmonth buat set budget bulan ini.")
     return ConversationHandler.END
 

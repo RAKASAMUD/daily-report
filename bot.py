@@ -17,6 +17,8 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from datetime import datetime
+from flask import Flask
+from threading import Thread
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -187,7 +189,21 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Input dibatalkan.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
 if __name__ == '__main__':
+    keep_alive()
     application = ApplicationBuilder().token(TOKEN).build()
     
     conv_handler = ConversationHandler(

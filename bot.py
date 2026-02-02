@@ -1,14 +1,11 @@
 import os
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (
-    ApplicationBuilder, 
-    CommandHandler, 
-    ContextTypes, 
-    MessageHandler, 
-    filters, 
-    ConversationHandler
+    ApplicationBuilder, CommandHandler, ContextTypes, 
+    MessageHandler, filters, ConversationHandler
 )
 from fpdf import FPDF
 import smtplib
@@ -16,63 +13,73 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-from datetime import datetime
 from flask import Flask
 from threading import Thread
+from supabase import create_client, Client
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
+# 1. SETUP LOGGING & ENV
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 load_dotenv()
+
 TOKEN = os.getenv('TELEGRAM_TOKEN')
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Inisialisasi Supabase
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Definisi State
-NAMA, GMAIL, BUDGET, TANGGAL_H, PENGELUARAN, NAMA_BARANG = range(6)
+NAMA, GMAIL, BUDGET, TANGGAL_H, NAMA_BARANG, PENGELUARAN = range(6)
 
-# --- FUNGSI REGISTRASI ---
+# --- FUNGSI HELPER DATABASE ---
+def get_user_profile(user_id):
+    res = supabase.table("profiles").select("*").eq("user_id", user_id).execute()
+    return res.data[0] if res.data else None
+
+def get_today_expenses(user_id):
+    today = datetime.now().strftime("%Y-%m-%d")
+    res = supabase.table("pengeluaran").select("*").eq("user_id", user_id).gte("created_at", today).execute()
+    return res.data
+
+# --- HANDLERS REGISTRASI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Berikan Nama Anda:")
+    await update.message.reply_text("Berikan Nama")
     return NAMA
 
 async def ambil_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['nama'] = update.message.text
-    await update.message.reply_text(f"Halo {update.message.text}, Masukkan Gmail Anda:")
+    await update.message.reply_text(f"Oke {update.message.text}, masukin alamat Gmail:")
     return GMAIL
 
 async def ambil_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['gmail'] = update.message.text
-    await update.message.reply_text("Gmail Berhasil Disimpan! Ketik /newmonth buat setting budget.")
+    user_id = update.message.from_user.id
+    nama = context.user_data['nama']
+    gmail = update.message.text
+    
+    # Simpan/Update ke Supabase
+    supabase.table("profiles").upsert({"user_id": user_id, "nama": nama, "gmail": gmail}).execute()
+    
+    await update.message.reply_text("Profil telah tersimpan. Ketik /newmonth buat set budget bulan ini.")
     return ConversationHandler.END
 
-# --- FUNGSI BUDGET ---
+# --- HANDLERS BUDGET ---
 async def new_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Masukkan Budget Bulanan (Angka saja):")
+    await update.message.reply_text("Berapa budget jajan lu bulan ini?")
     return BUDGET
 
 async def ambil_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if not text.isdigit():
-        await update.message.reply_text("Masukkan angka saja tanpa simbol lain!")
-        return BUDGET
-    context.user_data['budget'] = int(text)
-    await update.message.reply_text("Bulan ini ada berapa hari? (28-31)")
-    return TANGGAL_H
-
-async def ambil_tanggal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tanggal = update.message.text
-    if not tanggal.isdigit() or not (1 <= int(tanggal) <= 31):
-        await update.message.reply_text("Masukkan tanggal yang valid!")
-        return TANGGAL_H
-    context.user_data['hari_h'] = int(tanggal)
-    budget = context.user_data['budget']
-    await update.message.reply_text(f"Budget Rp{budget:,} & Tanggal {tanggal} tersimpan.\nKetik /pengeluaran tiap kali jajan.")
+    user_id = update.message.from_user.id
+    budget = int(update.message.text)
+    
+    # Update Budget di database
+    supabase.table("profiles").update({"budget": budget}).eq("user_id", user_id).execute()
+    
+    await update.message.reply_text(f"Budget Rp{budget:,} sudah tersimpan! jika ada pengeluaran ketik /pengeluaran.")
     return ConversationHandler.END
 
-# --- FUNGSI JAJAN (ALA STOCKBIT) ---
+# --- HANDLERS JAJAN ---
 async def pengeluaran_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Beli apa le? (Nama Barang)")
+    await update.message.reply_text("Masukkan nama pembelian")
     return NAMA_BARANG
 
 async def ambil_nama_barang(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -81,129 +88,113 @@ async def ambil_nama_barang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return PENGELUARAN
 
 async def ambil_pengeluaran(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    harga = update.message.text
-    if not harga.isdigit():
-        await update.message.reply_text("Input angka!")
-        return PENGELUARAN
+    user_id = update.message.from_user.id
+    item = context.user_data.get('temp_item')
+    harga = int(update.message.text)
     
-    nominal = int(harga)
-    nama_barang = context.user_data.get('temp_item')
+    # 1. Simpan ke Tabel Pengeluaran
+    supabase.table("pengeluaran").insert({"user_id": user_id, "item": item, "harga": harga}).execute()
     
-    # Perbaikan Typo List
-    if 'list_jajan' not in context.user_data:
-        context.user_data['list_jajan'] = []
-    
-    # Simpan ke list
-    context.user_data['list_jajan'].append({
-        'tanggal': datetime.now().strftime("%d/%m/%Y"),
-        'item': nama_barang,
-        'harga': nominal
-    })
-
-    # Update Budget
-    sisa = context.user_data.get('budget', 0) - nominal
-    context.user_data['budget'] = sisa
+    # 2. Hitung Sisa Budget Real-time (Dari Database)
+    profile = get_user_profile(user_id)
+    all_expenses = supabase.table("pengeluaran").select("harga").eq("user_id", user_id).execute()
+    total_spent = sum(x['harga'] for x in all_expenses.data)
+    sisa = (profile['budget'] if profile else 0) - total_spent
     
     await update.message.reply_text(
-        f"✅ {nama_barang} (Rp{nominal:,}) dicatat!\n"
-        f"Sisa Budget: Rp{sisa:,}\n\n"
-        "Ketik /pengeluaran lagi atau /cetak_pdf buat dapet laporan."
+        f"✅ {item} (Rp{harga:,}) dicatat!\n"
+        f"Sisa Budget Bulan ini : Rp{sisa:,}\n\n"
+        "Ketik /pengeluaran lagi atau /cetak_pdf."
     )
     return ConversationHandler.END
 
-# --- FUNGSI PDF & EMAIL ---
-def generate_pdf_stockbit(nama, gmail, list_jajan, sisa_budget):
+# --- FUNGSI PDF (STOCKBIT LOOK) ---
+def generate_pdf_stockbit(nama, gmail, list_jajan, budget_awal):
     pdf = FPDF()
     pdf.add_page()
     
-    # Header Trade Confirmation
-    pdf.set_font("Arial", "B", 20)
+    # Header
+    pdf.set_font("Arial", "B", 16)
     pdf.cell(0, 10, "Trade Confirmation", ln=True)
-    pdf.set_font("Arial", size=10)
-    pdf.cell(0, 10, f"Transaction Date: {datetime.now().strftime('%d/%m/%Y')}", ln=True, align='R')
-    pdf.ln(5)
-    
-    pdf.cell(0, 5, f"To: {nama.upper()}", ln=True)
-    pdf.cell(0, 5, f"Email: {gmail}", ln=True)
+    pdf.set_font("Arial", size=9)
+    pdf.cell(0, 5, f"Client: {nama.upper()}", ln=True)
+    pdf.cell(0, 5, f"Date: {datetime.now().strftime('%d/%m/%Y')}", ln=True)
     pdf.ln(10)
     
-    # Tabel
+    # Table Header
     pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(100, 10, " NAMA BARANG", border=1, fill=True)
-    pdf.cell(90, 10, " NOMINAL", border=1, ln=True, fill=True, align='R')
+    pdf.set_font("Arial", "B", 10)
+    pdf.cell(110, 8, " ITEM DESCRIPTION", border=1, fill=True)
+    pdf.cell(80, 8, " AMOUNT (IDR)", border=1, ln=True, fill=True, align='R')
     
-    pdf.set_font("Arial", size=11)
+    # Table Content
+    pdf.set_font("Arial", size=10)
+    total_today = 0
     for jajan in list_jajan:
-        pdf.cell(100, 10, f" {jajan['item']}", border=1)
-        pdf.cell(90, 10, f" Rp{jajan['harga']:,} ", border=1, ln=True, align='R')
+        pdf.cell(110, 8, f" {jajan['item'].upper()}", border=1)
+        pdf.cell(80, 8, f"{jajan['harga']:,} ", border=1, ln=True, align='R')
+        total_today += jajan['harga']
     
+    # Summary
     pdf.ln(5)
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(100, 10, " SISA SALDO", border=0)
-    pdf.cell(90, 10, f" Rp{sisa_budget:,} ", border=0, ln=True, align='R')
+    pdf.set_font("Arial", "B", 11)
+    pdf.cell(110, 10, "TOTAL EXPENDITURE TODAY", align='R')
+    pdf.cell(80, 10, f" Rp {total_today:,} ", ln=True, align='R')
     
     filename = f"Trade_Conf_{nama}.pdf"
     pdf.output(filename)
     return filename
 
 async def cetak_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'list_jajan' not in context.user_data or not context.user_data['list_jajan']:
-        await update.message.reply_text("Belum ada data pengeluaran.")
+    user_id = update.message.from_user.id
+    profile = get_user_profile(user_id)
+    list_jajan = get_today_expenses(user_id)
+    
+    if not list_jajan:
+        await update.message.reply_text("Belum ada pengeluaran.")
         return
 
-    nama = context.user_data.get('nama', 'User')
-    gmail = context.user_data.get('gmail', 'Unknown')
-    sisa = context.user_data.get('budget', 0)
-    list_jajan = context.user_data['list_jajan']
-
-    file_pdf = generate_pdf_stockbit(nama, gmail, list_jajan, sisa)
-    await update.message.reply_document(document=open(file_pdf, 'rb'), caption="Ini Trade Confirmation lu hari ini le!")
+    file_pdf = generate_pdf_stockbit(profile['nama'], profile['gmail'], list_jajan, profile['budget'])
     
-    # Fungsi kirim email (tetap pake smtplib lu yang lama)
-    kirim_email_laporan(gmail, file_pdf, nama)
+    # Kirim ke Telegram
+    await update.message.reply_document(document=open(file_pdf, 'rb'), caption="Laporan Harian")
+    
+    # Kirim ke Email
+    kirim_email_laporan(profile['gmail'], file_pdf, profile['nama'])
 
 def kirim_email_laporan(ke_email, file_pdf, nama_user):
     pengirim = os.getenv('GMAIL_USER')
     password = os.getenv('GMAIL_PASSWORD')
-    # ... (logika smtplib lu yang lama udah bener, pastiin aja panggilannya smtp.gmail.com) ...
     try:
         pesan = MIMEMultipart()
-        pesan['From'], pesan['To'], pesan['Subject'] = pengirim, ke_email, f"Laporan {nama_user}"
-        pesan.attach(MIMEText("Laporan harian terlampir.", 'plain'))
+        pesan['From'], pesan['To'], pesan['Subject'] = pengirim, ke_email, f"Financial Report - {nama_user}"
+        pesan.attach(MIMEText("Terlampir laporan transaksi harian anda.", 'plain'))
         with open(file_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
         part.add_header("Content-Disposition", f"attachment; filename={file_pdf}")
         pesan.attach(part)
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(pengirim, password)
-        server.send_message(pesan)
-        server.quit()
+        
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(pengirim, password)
+            server.send_message(pesan)
         return True
-    except: return False
+    except Exception as e:
+        print(f"Error Email: {e}")
+        return False
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Input dibatalkan.", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
-
+# --- WEB SERVER FOR RENDER ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Bot is alive!"
+def home(): return "Bot Active"
 
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
+def run_flask(): app.run(host='0.0.0.0', port=8080)
 
 if __name__ == '__main__':
-    keep_alive()
+    Thread(target=run_flask).start()
+    
     application = ApplicationBuilder().token(TOKEN).build()
     
     conv_handler = ConversationHandler(
@@ -216,15 +207,15 @@ if __name__ == '__main__':
             NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_nama)],
             GMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_gmail)],
             BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_budget)],
-            TANGGAL_H: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_tanggal)],
-            NAMA_BARANG: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_nama_barang)], # PERBAIKAN: Ditambahin
+            NAMA_BARANG: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_nama_barang)],
             PENGELUARAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, ambil_pengeluaran)],
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
+        fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)],
+        allow_reentry=True
     )
 
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler('cetak_pdf', cetak_manual)) # Tombol Cetak
+    application.add_handler(CommandHandler('cetak_pdf', cetak_manual))
     
-    print("Bot aktif")
+    print("Bot is running...")
     application.run_polling()
